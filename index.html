@@ -51,7 +51,7 @@
 
   <button id="connect">블루투스 연결</button>
   <button id="go" disabled>GO · 서보 작동</button>
-  <div id="status">연결되지 않음</div>
+  <div id="status">기기 확인 중...</div>
 </main>
 
 <script>
@@ -61,35 +61,76 @@ const SERVICE_UUID =
 const CHARACTERISTIC_UUID =
   'abcdefab-1234-1234-1234-abcdefabcdef';
 
+let device = null;
 let characteristic = null;
+let connecting = false;
 
 const status = document.getElementById('status');
 const connectButton = document.getElementById('connect');
 const goButton = document.getElementById('go');
 
-connectButton.addEventListener('click', async () => {
+function setDisconnected(message = '연결되지 않음') {
+  characteristic = null;
+  goButton.disabled = true;
+  status.textContent = message;
+}
+
+async function connectDevice(selectedDevice) {
+  if (connecting) return;
+
+  connecting = true;
+  connectButton.disabled = true;
+  status.textContent = '연결 중...';
+
   try {
-    status.textContent = '블루투스 기기 검색 중...';
+    device = selectedDevice;
 
-    const device = await navigator.bluetooth.requestDevice({
-      filters: [{ name: 'ServoESP32' }],
-      optionalServices: [SERVICE_UUID]
-    });
+    device.removeEventListener(
+      'gattserverdisconnected', onDisconnected
+    );
+    device.addEventListener(
+      'gattserverdisconnected', onDisconnected
+    );
 
-    device.addEventListener('gattserverdisconnected', () => {
-      characteristic = null;
-      goButton.disabled = true;
-      status.textContent = '연결 끊김';
-    });
+    const server = device.gatt.connected
+      ? device.gatt
+      : await device.gatt.connect();
 
-    const server = await device.gatt.connect();
     const service = await server.getPrimaryService(SERVICE_UUID);
-
     characteristic =
       await service.getCharacteristic(CHARACTERISTIC_UUID);
 
     goButton.disabled = false;
     status.textContent = '연결됨: ' + device.name;
+  } catch (error) {
+    setDisconnected('연결 실패: ' + error.message);
+  } finally {
+    connecting = false;
+    connectButton.disabled = false;
+  }
+}
+
+function onDisconnected() {
+  setDisconnected('연결 끊김 · 다시 연결해 줘');
+}
+
+connectButton.addEventListener('click', async () => {
+  try {
+    if (!navigator.bluetooth) {
+      status.textContent =
+        'Web Bluetooth를 사용할 수 없어. beacio 확장을 확인해 줘.';
+      return;
+    }
+
+    status.textContent = '블루투스 기기 검색 중...';
+
+    const selectedDevice =
+      await navigator.bluetooth.requestDevice({
+        filters: [{ name: 'ServoESP32' }],
+        optionalServices: [SERVICE_UUID]
+      });
+
+    await connectDevice(selectedDevice);
   } catch (error) {
     status.textContent = '연결 실패: ' + error.message;
   }
@@ -103,9 +144,34 @@ goButton.addEventListener('click', async () => {
     await characteristic.writeValueWithResponse(data);
     status.textContent = 'GO 전송 완료!';
   } catch (error) {
-    status.textContent = '전송 실패: ' + error.message;
+    setDisconnected('전송 실패: ' + error.message);
   }
 });
+
+async function restorePreviousDevice() {
+  try {
+    if (!navigator.bluetooth ||
+        typeof navigator.bluetooth.getDevices !== 'function') {
+      status.textContent = '처음 연결은 연결 버튼을 눌러 줘.';
+      return;
+    }
+
+    const devices = await navigator.bluetooth.getDevices();
+    const previousDevice =
+      devices.find(item => item.name === 'ServoESP32');
+
+    if (!previousDevice) {
+      status.textContent = '처음 연결은 연결 버튼을 눌러 줘.';
+      return;
+    }
+
+    await connectDevice(previousDevice);
+  } catch (error) {
+    setDisconnected('자동 재연결 실패 · 연결 버튼을 눌러 줘');
+  }
+}
+
+restorePreviousDevice();
 </script>
 </body>
 </html>
